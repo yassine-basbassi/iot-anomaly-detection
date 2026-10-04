@@ -1,0 +1,8 @@
+paho-mqtt
+pandas
+numpy
+matplotlib
+scikit-learn
+joblib
+streamlit
+pytest

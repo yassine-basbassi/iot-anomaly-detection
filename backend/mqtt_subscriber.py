@@ -1,93 +1,145 @@
+# ============================================================
+# MQTT SUBSCRIBER
+# IoT Industrial Machine Monitoring
+# ============================================================
+
 import json
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
-from database import init_database, insert_data
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(BASE_DIR))
 
 
 # ============================================================
-# CONFIGURATION MQTT
+# DATABASE
+# ============================================================
+
+from backend.database import insert_data
+
+
+# ============================================================
+# MACHINE LEARNING
+# ============================================================
+
+from data_science.ml_predict import predict_anomaly
+
+
+# ============================================================
+# MQTT CONFIGURATION
 # ============================================================
 
 MQTT_BROKER = "test.mosquitto.org"
+
 MQTT_PORT = 1883
 
 MQTT_TOPIC = "iot/industrial/ESP32_MACHINE_01"
 
+CLIENT_ID = "PYTHON_SUBSCRIBER_01"
+
 
 # ============================================================
-# CONNEXION MQTT
+# CALLBACK : CONNECT
 # ============================================================
 
-def on_connect(client, userdata, flags, reason_code, properties):
-    """
-    Appelée lorsque Python se connecte au broker MQTT.
-    """
+def on_connect(client, userdata, flags, rc):
 
-    if reason_code == 0:
+    if rc == 0:
 
-        print("------------------------------------")
-        print("Connected to MQTT broker")
-        print("Broker:", MQTT_BROKER)
-        print("Topic:", MQTT_TOPIC)
-        print("------------------------------------")
+        print("\n========================================")
+        print("MQTT CONNECTED")
+        print("Broker :", MQTT_BROKER)
+        print("Topic  :", MQTT_TOPIC)
+        print("========================================\n")
 
         client.subscribe(MQTT_TOPIC)
 
-        print("Waiting for IoT data...")
-        print()
+        print("Waiting for ESP32 data...\n")
 
     else:
 
-        print("MQTT connection failed")
-        print("Reason code:", reason_code)
+        print(
+            f"MQTT connection failed. Return code: {rc}"
+        )
 
 
 # ============================================================
-# RÉCEPTION DES MESSAGES
+# CALLBACK : MESSAGE
 # ============================================================
 
-def on_message(client, userdata, message):
-    """
-    Appelée lorsqu'un message MQTT est reçu.
-    """
+def on_message(client, userdata, msg):
 
     try:
 
-        # Message MQTT → texte
-        payload = message.payload.decode("utf-8")
+        # ----------------------------------------------------
+        # JSON MESSAGE
+        # ----------------------------------------------------
 
-        # JSON → dictionnaire Python
+        payload = msg.payload.decode("utf-8")
+
         data = json.loads(payload)
 
-        # Récupération des données
-        timestamp = data.get("timestamp")
-        device_id = data.get("device_id")
-        temperature = data.get("temperature")
-        humidity = data.get("humidity")
-        vibration = data.get("vibration")
-        current = data.get("current")
-
-        # Pour le moment, l'anomalie est à 0.
-        # Isolation Forest sera intégré plus tard.
-        anomaly = 0
-        anomaly_score = None
 
         # ----------------------------------------------------
-        # AFFICHAGE
+        # SENSOR DATA
         # ----------------------------------------------------
 
-        print("========== MQTT DATA ==========")
+        timestamp = data["timestamp"]
 
-        print("Device      :", device_id)
-        print("Timestamp   :", timestamp)
-        print("Temperature :", temperature, "°C")
-        print("Humidity    :", humidity, "%")
-        print("Vibration   :", vibration)
-        print("Current     :", current, "A")
+        device_id = data["device_id"]
+
+        temperature = float(
+            data["temperature"]
+        )
+
+        humidity = float(
+            data["humidity"]
+        )
+
+        vibration = float(
+            data["vibration"]
+        )
+
+        current = float(
+            data["current"]
+        )
+
 
         # ----------------------------------------------------
-        # SAUVEGARDE SQLITE
+        # SERVER TIMESTAMP
+        # ----------------------------------------------------
+
+        received_at = datetime.now(
+            timezone.utc
+        ).isoformat(
+            timespec="seconds"
+        )
+
+
+        # ----------------------------------------------------
+        # MACHINE LEARNING
+        # ----------------------------------------------------
+
+        anomaly, anomaly_score = predict_anomaly(
+            temperature,
+            humidity,
+            vibration,
+            current
+        )
+
+
+        # ----------------------------------------------------
+        # SAVE TO DATABASE
         # ----------------------------------------------------
 
         insert_data(
@@ -98,58 +150,106 @@ def on_message(client, userdata, message):
             vibration=vibration,
             current=current,
             anomaly=anomaly,
-            anomaly_score=anomaly_score
+            anomaly_score=anomaly_score,
+            received_at=received_at
         )
 
-        print("Database    : SAVED")
-        print("================================")
-        print()
 
-    except json.JSONDecodeError:
+        # ----------------------------------------------------
+        # STATUS
+        # ----------------------------------------------------
 
-        print("ERROR: Invalid JSON received")
+        if anomaly == 1:
 
-        print("Raw message:", message.payload)
+            status = "ANOMALY"
+
+        else:
+
+            status = "NORMAL"
+
+
+        # ----------------------------------------------------
+        # DISPLAY
+        # ----------------------------------------------------
+
+        print("\n========== MQTT DATA ==========")
+
+        print(
+            f"Device      : {device_id}"
+        )
+
+        print(
+            f"ESP32 Time  : {timestamp}"
+        )
+
+        print(
+            f"Received At : {received_at}"
+        )
+
+        print(
+            f"Temperature : {temperature} °C"
+        )
+
+        print(
+            f"Humidity    : {humidity} %"
+        )
+
+        print(
+            f"Vibration   : {vibration}"
+        )
+
+        print(
+            f"Current     : {current} A"
+        )
+
+        print(
+            f"Anomaly     : {anomaly}"
+        )
+
+        print(
+            f"Score       : {anomaly_score:.6f}"
+        )
+
+        print(
+            f"Status      : {status}"
+        )
+
+        print(
+            "Database    : SAVED"
+        )
+
+        print(
+            "================================"
+        )
+
 
     except Exception as error:
 
-        print("ERROR:", error)
+        print(
+            "\nERROR processing MQTT message:"
+        )
+
+        print(error)
 
 
 # ============================================================
-# INITIALISATION DATABASE
-# ============================================================
-
-init_database()
-
-
-# ============================================================
-# CRÉATION DU CLIENT MQTT
+# MQTT CLIENT
 # ============================================================
 
 client = mqtt.Client(
-    mqtt.CallbackAPIVersion.VERSION2,
-    client_id="PYTHON_SUBSCRIBER_01"
+    client_id=CLIENT_ID
 )
 
-
-# ============================================================
-# CALLBACKS
-# ============================================================
-
 client.on_connect = on_connect
+
 client.on_message = on_message
 
 
 # ============================================================
-# CONNEXION
+# CONNECT
 # ============================================================
 
-print("------------------------------------")
-print("Python MQTT Subscriber")
-print("------------------------------------")
-
-print("Connecting to MQTT broker...")
+print("\nConnecting to MQTT broker...")
 
 client.connect(
     MQTT_BROKER,
@@ -159,22 +259,7 @@ client.connect(
 
 
 # ============================================================
-# BOUCLE MQTT
+# START LOOP
 # ============================================================
 
-try:
-
-    print("Starting MQTT loop...")
-
-    client.loop_forever()
-
-except KeyboardInterrupt:
-
-    print()
-    print("Subscriber stopped by user.")
-
-finally:
-
-    client.disconnect()
-
-    print("Disconnected from MQTT broker.")
+client.loop_forever()
